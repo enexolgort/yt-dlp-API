@@ -1,0 +1,519 @@
+openapi: 3.0.3
+info:
+  title: yt-dlp API
+  version: 1.0.0
+  description: |
+    HTTP API around [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+    Inspect media, queue background downloads, follow their progress,
+    fetch the resulting files, or push them to a remote server over SFTP.
+
+    When `API_KEY` is set, every endpoint except `/health` requires the `X-API-Key` header.
+servers:
+  - url: /
+security:
+  - ApiKey: []
+tags:
+  - name: Health
+  - name: yt-dlp
+  - name: Metadata
+  - name: Downloads
+  - name: SFTP
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check (also verifies yt-dlp is runnable)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  ytdlp: { type: string, example: "2026.10.22" }
+        "503":
+          description: yt-dlp cannot be executed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /ytdlp/version:
+    get:
+      tags: [yt-dlp]
+      summary: Installed yt-dlp version
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /ytdlp/update:
+    post:
+      tags: [yt-dlp]
+      summary: Self-update yt-dlp
+      description: |
+        Runs `yt-dlp --update-to <channel>`. Sites change often, so keeping yt-dlp
+        current fixes most extraction errors. Works with the standalone binary
+        (the Docker image); pip installs must be updated with pip.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: string
+                  default: stable
+                  description: "stable, nightly, master, or a specific tag such as stable@2026.10.22"
+      responses:
+        "200":
+          description: Update ran
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  output: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/YtDlpError" }
+
+  /info:
+    get:
+      tags: [Metadata]
+      summary: Get metadata for a URL without downloading
+      parameters:
+        - $ref: "#/components/parameters/Url"
+        - name: playlist
+          in: query
+          description: Resolve the URL as a playlist (flat list of entries) instead of a single video
+          schema: { type: boolean, default: false }
+        - name: raw
+          in: query
+          description: Return yt-dlp's full info dict instead of the trimmed summary
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Media info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MediaInfo" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/YtDlpError" }
+
+  /formats:
+    get:
+      tags: [Metadata]
+      summary: List available formats for a video
+      parameters:
+        - $ref: "#/components/parameters/Url"
+      responses:
+        "200":
+          description: Formats
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MediaFormat" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/YtDlpError" }
+
+  /downloads:
+    get:
+      tags: [Downloads]
+      summary: List download jobs (newest first)
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/DownloadStatus" }
+      responses:
+        "200":
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DownloadJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Downloads]
+      summary: Queue a download
+      description: |
+        Returns `202` immediately. Poll `GET /downloads/{id}` for progress.
+        Files are written to `DOWNLOAD_DIR/<id>/`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DownloadOptions" }
+            examples:
+              best:
+                summary: Best quality video
+                value: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+              p1080mp4:
+                summary: 1080p max, merged to mp4
+                value:
+                  url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                  format: "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+                  mergeFormat: mp4
+              mp3:
+                summary: Audio only as mp3, with cover and tags
+                value:
+                  url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                  audioOnly: true
+                  audioFormat: mp3
+                  embedThumbnail: true
+                  embedMetadata: true
+              playlist:
+                summary: First 5 items of a playlist
+                value:
+                  url: "https://www.youtube.com/playlist?list=PL..."
+                  playlist: true
+                  playlistItems: "1-5"
+                  outputTemplate: "%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s"
+      responses:
+        "202":
+          description: Queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownloadJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /downloads/{id}:
+    parameters:
+      - $ref: "#/components/parameters/DownloadId"
+    get:
+      tags: [Downloads]
+      summary: Get a download job (status, progress, files)
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownloadJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Downloads]
+      summary: Remove a job (cancels it if running)
+      parameters:
+        - name: deleteFiles
+          in: query
+          description: Also delete the job's folder on disk
+          schema: { type: boolean, default: false }
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /downloads/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/DownloadId"
+    post:
+      tags: [Downloads]
+      summary: Cancel a queued or running download (keeps the job and partial files)
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownloadJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /downloads/{id}/files:
+    parameters:
+      - $ref: "#/components/parameters/DownloadId"
+    get:
+      tags: [Downloads]
+      summary: List files produced by a download
+      responses:
+        "200":
+          description: Files
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DownloadFile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /downloads/{id}/files/{name}:
+    parameters:
+      - $ref: "#/components/parameters/DownloadId"
+      - name: name
+        in: path
+        required: true
+        description: File name as returned by `/downloads/{id}/files` (URL-encoded; may contain `/`)
+        schema: { type: string }
+    get:
+      tags: [Downloads]
+      summary: Download a file
+      responses:
+        "200":
+          description: File content (sent as attachment)
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /downloads/{id}/push-sftp:
+    parameters:
+      - $ref: "#/components/parameters/DownloadId"
+    post:
+      tags: [SFTP]
+      summary: Push a completed download's files to the configured SFTP server
+      description: Runs in the background. Returns `202` with a transfer job; poll `GET /transfers/{jobId}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [remoteFolder]
+              properties:
+                remoteFolder: { type: string, example: /home/me/videos }
+      responses:
+        "202":
+          description: Transfer started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Download not completed yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: SFTP not configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /transfers:
+    get:
+      tags: [SFTP]
+      summary: List SFTP transfer jobs
+      responses:
+        "200":
+          description: Transfers
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TransferJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /transfers/{jobId}:
+    get:
+      tags: [SFTP]
+      summary: Get an SFTP transfer job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Transfer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  parameters:
+    Url:
+      name: url
+      in: query
+      required: true
+      schema: { type: string, format: uri }
+      example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    DownloadId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or invalid X-API-Key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    YtDlpError:
+      description: yt-dlp failed (unsupported URL, unavailable video, extractor broken...)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              exitCode: { type: integer, nullable: true }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    DownloadStatus:
+      type: string
+      enum: [queued, downloading, processing, completed, failed, cancelled]
+
+    DownloadOptions:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        format:
+          type: string
+          description: yt-dlp format selector (`-f`)
+          example: "bestvideo[height<=1080]+bestaudio/best"
+        audioOnly: { type: boolean, description: "Extract audio (`-x`)" }
+        audioFormat:
+          type: string
+          description: Audio codec when audioOnly is true
+          example: mp3
+        mergeFormat:
+          type: string
+          description: Output container when video and audio are merged
+          example: mp4
+        playlist: { type: boolean, default: false, description: Download the whole playlist }
+        playlistItems: { type: string, example: "1-5,8" }
+        subtitles:
+          type: array
+          items: { type: string }
+          example: [en, fr]
+        embedSubtitles: { type: boolean }
+        embedThumbnail: { type: boolean }
+        embedMetadata: { type: boolean }
+        rateLimit: { type: string, example: 2M }
+        outputTemplate:
+          type: string
+          description: yt-dlp output template, relative to the job folder (no `..`, not absolute)
+          default: "%(title)s [%(id)s].%(ext)s"
+
+    DownloadProgress:
+      type: object
+      properties:
+        percent: { type: number, nullable: true }
+        downloadedBytes: { type: integer, nullable: true }
+        totalBytes: { type: integer, nullable: true }
+        speed: { type: number, nullable: true, description: bytes per second }
+        eta: { type: integer, nullable: true, description: seconds }
+        currentTitle: { type: string, nullable: true }
+        playlistIndex: { type: integer, nullable: true }
+        playlistCount: { type: integer, nullable: true }
+
+    DownloadFile:
+      type: object
+      properties:
+        name: { type: string }
+        size: { type: integer }
+
+    DownloadJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/DownloadStatus" }
+        options: { $ref: "#/components/schemas/DownloadOptions" }
+        progress: { $ref: "#/components/schemas/DownloadProgress" }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/DownloadFile" }
+        error: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+
+    MediaFormat:
+      type: object
+      properties:
+        formatId: { type: string }
+        ext: { type: string }
+        resolution: { type: string, nullable: true }
+        fps: { type: number, nullable: true }
+        vcodec: { type: string, nullable: true }
+        acodec: { type: string, nullable: true }
+        filesize: { type: integer, nullable: true }
+        tbr: { type: number, nullable: true }
+        note: { type: string, nullable: true }
+
+    MediaInfo:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [video, playlist] }
+        title: { type: string }
+        url: { type: string }
+        extractor: { type: string }
+        uploader: { type: string, nullable: true }
+        channel: { type: string, nullable: true }
+        duration: { type: number, nullable: true }
+        uploadDate: { type: string, nullable: true, example: "20240131" }
+        viewCount: { type: integer, nullable: true }
+        isLive: { type: boolean, nullable: true }
+        thumbnail: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        formats:
+          type: array
+          items: { $ref: "#/components/schemas/MediaFormat" }
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              title: { type: string, nullable: true }
+              url: { type: string, nullable: true }
+              duration: { type: number, nullable: true }
+
+    TransferJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        downloadId: { type: string, format: uuid }
+        remoteFolder: { type: string }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        bytesTransferred: { type: integer }
+        totalBytes: { type: integer }
+        percent: { type: number }
+        currentFile: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }

@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: dockerfile
+      args:
+        YTDLP_VERSION: latest # or a release tag, e.g. 2026.10.22
+    container_name: yt-dlp-api
+    env_file: .env
+    environment:
+      DOWNLOAD_DIR: /downloads
+      SFTP_PRIVATE_KEY_PATH: /sftp-keys/id_ed25519
+      # YTDLP_COOKIES_FILE: /cookies/cookies.txt
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./downloads:/downloads # finished files, one folder per job
+      - ./sftp-keys:/sftp-keys:ro # SSH key for SFTP pushes (optional)
+      # - ./cookies:/cookies:ro # Netscape cookies.txt for age-restricted / private content
+    restart: unless-stopped
+
+    # To route yt-dlp through a VPN container (e.g. gluetun), remove "ports" above,
+    # publish 3000 on the VPN container instead, and uncomment:
+    # network_mode: "container:gluetun"
