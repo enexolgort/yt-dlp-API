@@ -116,8 +116,20 @@ curl -X POST http://localhost:3000/downloads \
 ```bash
 curl -X POST http://localhost:3000/downloads \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://www.youtube.com/watch?v=jNQXAC9IVRw","audioOnly":true,"audioFormat":"mp3","embedThumbnail":true,"embedMetadata":true}'
+  -d '{"url":"https://www.youtube.com/watch?v=jNQXAC9IVRw","type":"audio","audioFormat":"mp3","embedThumbnail":true,"embedMetadata":true}'
 ```
+
+**Album video → one tagged mp3 per chapter**
+
+```bash
+curl -X POST http://localhost:3000/downloads \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://www.youtube.com/watch?v=...","type":"audio","audioFormat":"mp3","splitChapters":true,
+       "embedThumbnail":true,"metadata":{"artist":"Daft Punk","album":"Alive 2007","date":"2007"}}'
+```
+
+Chapters land in `<title> [<id>]/01 - <chapter>.mp3`, and the full-length file is deleted unless `keepOriginal` is true.
+Every chapter file gets the same tags (including the title of the whole video).
 
 **Part of a playlist, into a subfolder**
 
@@ -152,11 +164,16 @@ curl http://localhost:3000/transfers/<transferId>
 | --- | --- | --- |
 | `url` | string (required) | |
 | `format` | string | `-f` |
-| `audioOnly` / `audioFormat` | bool / string | `-x` / `--audio-format` |
+| `type` | `"video"` (default) / `"audio"` | `"audio"` → `-x -f bestaudio/best` |
+| `audioFormat` | string | `--audio-format` |
+| `audioOnly` | bool (deprecated, = `type: "audio"`) | `-x` |
 | `mergeFormat` | string | `--merge-output-format` |
 | `playlist` / `playlistItems` | bool / string | `--yes-playlist` / `-I` |
 | `subtitles` / `embedSubtitles` | string[] / bool | `--write-subs --sub-langs` / `--embed-subs` |
 | `embedThumbnail` / `embedMetadata` | bool | `--embed-thumbnail` / `--embed-metadata` |
+| `metadata` | object: `title`, `artist`, `album`, `albumArtist`, `genre`, `date`, `track`, `composer`, `comment` | `--parse-metadata` into `meta_*` + `--embed-metadata` |
+| `splitChapters` / `keepOriginal` | bool / bool | `--split-chapters` / keep the unsplit file |
+| `chapterTemplate` | string | `-o "chapter:..."` (relative, no `..`) |
 | `rateLimit` | string | `--limit-rate` |
 | `outputTemplate` | string | `-o` (relative, no `..`) |
 

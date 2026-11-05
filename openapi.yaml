@@ -172,10 +172,19 @@ paths:
                 summary: Audio only as mp3, with cover and tags
                 value:
                   url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-                  audioOnly: true
+                  type: audio
                   audioFormat: mp3
                   embedThumbnail: true
                   embedMetadata: true
+              album:
+                summary: Full album video split into one mp3 per chapter, tagged
+                value:
+                  url: "https://www.youtube.com/watch?v=..."
+                  type: audio
+                  audioFormat: mp3
+                  splitChapters: true
+                  embedThumbnail: true
+                  metadata: { artist: "Daft Punk", album: "Alive 2007", date: "2007", genre: "Electronic" }
               playlist:
                 summary: First 5 items of a playlist
                 value:
@@ -404,10 +413,20 @@ components:
           type: string
           description: yt-dlp format selector (`-f`)
           example: "bestvideo[height<=1080]+bestaudio/best"
-        audioOnly: { type: boolean, description: "Extract audio (`-x`)" }
+        type:
+          type: string
+          enum: [video, audio]
+          default: video
+          description: |
+            `audio` extracts the audio track only (`-x`, format defaults to `bestaudio/best`).
+            `video` keeps video and audio.
+        audioOnly:
+          type: boolean
+          deprecated: true
+          description: "Same as `type: audio`. Ignored when `type` is set."
         audioFormat:
           type: string
-          description: Audio codec when audioOnly is true
+          description: Audio codec when type is `audio` (mp3, m4a, opus, flac, wav...)
           example: mp3
         mergeFormat:
           type: string
@@ -422,6 +441,34 @@ components:
         embedSubtitles: { type: boolean }
         embedThumbnail: { type: boolean }
         embedMetadata: { type: boolean }
+        metadata:
+          type: object
+          description: |
+            Tags written into the file, overriding what yt-dlp extracted. Implies `embedMetadata`.
+            With `splitChapters`, every chapter file gets the same tags.
+          additionalProperties: false
+          properties:
+            title: { type: string }
+            artist: { type: string, example: Daft Punk }
+            album: { type: string, example: Alive 2007 }
+            albumArtist: { type: string }
+            genre: { type: string, example: Electronic }
+            date: { type: string, example: "2007" }
+            track: { type: string, example: "3/12" }
+            composer: { type: string }
+            comment: { type: string }
+        splitChapters:
+          type: boolean
+          default: false
+          description: Cut the file into one file per chapter (`--split-chapters`). No-op when the media has no chapters.
+        keepOriginal:
+          type: boolean
+          default: false
+          description: With `splitChapters`, also keep the full unsplit file. Otherwise it is deleted once chapters are written.
+        chapterTemplate:
+          type: string
+          description: Output template for chapter files, relative to the job folder (no `..`, not absolute)
+          default: "%(title)s [%(id)s]/%(section_number)02d - %(section_title)s.%(ext)s"
         rateLimit: { type: string, example: 2M }
         outputTemplate:
           type: string

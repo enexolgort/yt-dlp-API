@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { config } from "./config";
-import type { DownloadOptions, DownloadProgress, MediaFormat, MediaInfo } from "./types";
+import type { DownloadOptions, DownloadProgress, MediaFormat, MediaInfo, MetadataTags } from "./types";
 
 /** yt-dlp exited with an error (bad URL, unsupported site, video unavailable...) */
 export class YtDlpError extends Error {
@@ -171,6 +171,7 @@ export async function getFormats(url: string): Promise<MediaFormat[]> {
 
 const PROGRESS_TAG = "__PROGRESS__";
 const STAGE_TAG = "__STAGE__";
+const ORIGINAL_TAG = "__ORIGINAL__";
 
 // Fields separated by "|"; title goes last since it may itself contain "|"
 const PROGRESS_TEMPLATE =
@@ -186,6 +187,60 @@ function checkValue(name: string, value: unknown): void {
   }
 }
 
+function checkTemplate(name: string, template: unknown): asserts template is string {
+  if (typeof template !== "string" || !template || template.startsWith("/") || template.startsWith("~") || template.includes("..")) {
+    throw new ValidationError(`${name} must be a relative path without '..'`);
+  }
+  checkValue(name, template);
+}
+
+const DEFAULT_OUTPUT_TEMPLATE = "%(title)s [%(id)s].%(ext)s";
+// One folder per source file, chapters numbered inside it
+const DEFAULT_CHAPTER_TEMPLATE = "%(title)s [%(id)s]/%(section_number)02d - %(section_title)s.%(ext)s";
+
+/** API tag name -> ffmpeg metadata key (set through yt-dlp's meta_<key> fields) */
+const METADATA_KEYS: Record<keyof MetadataTags, string> = {
+  title: "title",
+  artist: "artist",
+  album: "album",
+  albumArtist: "album_artist",
+  genre: "genre",
+  date: "date",
+  track: "track",
+  composer: "composer",
+  comment: "comment",
+};
+
+/**
+ * Turns a literal value into a --parse-metadata FROM part.
+ * FROM is an output template, so "%" is escaped, and ":" must be escaped as it separates FROM from TO.
+ * A bare word would be read as a field name, so it is wrapped as the default of a missing field.
+ */
+function literalFrom(value: string): string {
+  if (/^[A-Za-z_]+$/.test(value)) return `%(__literal|${value})s`;
+  return value.replace(/%/g, "%%").replace(/:/g, "\\:");
+}
+
+function metadataArgs(tags: unknown): string[] {
+  if (tags === undefined) return [];
+  if (typeof tags !== "object" || tags === null || Array.isArray(tags)) {
+    throw new ValidationError("metadata must be an object");
+  }
+  const args: string[] = [];
+  for (const [field, value] of Object.entries(tags)) {
+    const key = METADATA_KEYS[field as keyof MetadataTags];
+    if (!key) {
+      throw new ValidationError(`metadata.${field} is not supported (allowed: ${Object.keys(METADATA_KEYS).join(", ")})`);
+    }
+    if (value === undefined || value === null) continue;
+    const text = typeof value === "number" ? String(value) : value;
+    checkValue(`metadata.${field}`, text);
+    if (!(text as string).trim()) throw new ValidationError(`metadata.${field} must not be empty`);
+    args.push("--parse-metadata", `pre_process:${literalFrom(text as string)}:%(meta_${key})s`);
+  }
+  return args;
+}
+
 export function buildDownloadArgs(o: DownloadOptions, jobDir: string): string[] {
   assertHttpUrl(o.url);
   checkValue("format", o.format);
@@ -194,10 +249,13 @@ export function buildDownloadArgs(o: DownloadOptions, jobDir: string): string[] 
   checkValue("playlistItems", o.playlistItems);
   checkValue("rateLimit", o.rateLimit);
 
-  const template = o.outputTemplate ?? "%(title)s [%(id)s].%(ext)s";
-  if (typeof template !== "string" || template.startsWith("/") || template.startsWith("~") || template.includes("..")) {
-    throw new ValidationError("outputTemplate must be a relative path without '..'");
+  if (o.type !== undefined && o.type !== "video" && o.type !== "audio") {
+    throw new ValidationError('type must be "video" or "audio"');
   }
+  const audio = o.type ? o.type === "audio" : Boolean(o.audioOnly);
+
+  const template = o.outputTemplate ?? DEFAULT_OUTPUT_TEMPLATE;
+  checkTemplate("outputTemplate", template);
 
   const args = [
     ...baseArgs(),
@@ -211,12 +269,21 @@ export function buildDownloadArgs(o: DownloadOptions, jobDir: string): string[] 
     o.playlist ? "--yes-playlist" : "--no-playlist",
   ];
 
-  if (o.format) args.push("--format", o.format);
-  if (o.audioOnly) {
-    args.push("--extract-audio");
+  if (audio) {
+    // Without a selector yt-dlp would fetch the full video just to throw the picture away
+    args.push("--format", o.format ?? "bestaudio/best", "--extract-audio");
     if (o.audioFormat) args.push("--audio-format", o.audioFormat);
-  } else if (o.mergeFormat) {
-    args.push("--merge-output-format", o.mergeFormat);
+  } else {
+    if (o.format) args.push("--format", o.format);
+    if (o.mergeFormat) args.push("--merge-output-format", o.mergeFormat);
+  }
+
+  if (o.splitChapters) {
+    const chapterTemplate = o.chapterTemplate ?? DEFAULT_CHAPTER_TEMPLATE;
+    checkTemplate("chapterTemplate", chapterTemplate);
+    args.push("--split-chapters", "--output", `chapter:${chapterTemplate}`);
+    // Reports each final unsplit file, and whether it had chapters, so the manager can drop it
+    args.push("--print", `after_move:${ORIGINAL_TAG}%(chapters.0.start_time|)s|%(filepath)s`);
   }
   if (o.playlistItems) args.push("--playlist-items", o.playlistItems);
   if (o.subtitles !== undefined && !Array.isArray(o.subtitles)) {
@@ -229,7 +296,9 @@ export function buildDownloadArgs(o: DownloadOptions, jobDir: string): string[] 
     if (o.embedSubtitles) args.push("--embed-subs");
   }
   if (o.embedThumbnail) args.push("--embed-thumbnail");
-  if (o.embedMetadata) args.push("--embed-metadata");
+  const tagArgs = metadataArgs(o.metadata);
+  args.push(...tagArgs);
+  if (o.embedMetadata || tagArgs.length) args.push("--embed-metadata");
   if (o.rateLimit) args.push("--limit-rate", o.rateLimit);
 
   args.push("--", o.url);
@@ -245,6 +314,8 @@ function num(value: string | undefined): number | null {
 export interface DownloadHandlers {
   onProgress(progress: DownloadProgress): void;
   onStage(stage: "processing"): void;
+  /** Final path of a file that went through --split-chapters, and whether it actually had chapters */
+  onOriginalFile?(filepath: string, hadChapters: boolean): void;
   onExit(code: number | null, stderr: string): void;
 }
 
@@ -278,6 +349,9 @@ export function spawnDownload(args: string[], handlers: DownloadHandlers): Child
       });
     } else if (line.startsWith(STAGE_TAG)) {
       handlers.onStage("processing");
+    } else if (line.startsWith(ORIGINAL_TAG)) {
+      const [firstChapterStart, ...filepath] = line.slice(ORIGINAL_TAG.length).split("|");
+      handlers.onOriginalFile?.(filepath.join("|"), num(firstChapterStart) !== null);
     }
   };
 

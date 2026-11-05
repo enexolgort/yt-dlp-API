@@ -83,6 +83,9 @@ function start(job: DownloadJob): void {
   job.status = "downloading";
   job.startedAt = new Date().toISOString();
 
+  // Unsplit files that were successfully cut into chapters
+  const splitOriginals: string[] = [];
+
   const child = spawnDownload(buildDownloadArgs(job.options, dir), {
     onProgress(progress) {
       if (job.status === "processing") job.status = "downloading"; // next playlist item
@@ -91,9 +94,15 @@ function start(job: DownloadJob): void {
     onStage() {
       job.status = "processing";
     },
+    onOriginalFile(filepath, hadChapters) {
+      if (hadChapters) splitOriginals.push(filepath);
+    },
     onExit(code, stderr) {
       processes.delete(job.id);
       job.finishedAt = new Date().toISOString();
+      if (code === 0 && job.status !== "cancelled" && !job.options.keepOriginal) {
+        removeOriginals(dir, splitOriginals);
+      }
       job.files = listFiles(dir);
       if (job.status !== "cancelled") {
         if (code === 0) {
@@ -110,6 +119,20 @@ function start(job: DownloadJob): void {
     },
   });
   processes.set(job.id, child);
+}
+
+/** Deletes the full-length files once chapters were extracted, never touching anything outside the job folder */
+function removeOriginals(dir: string, files: string[]): void {
+  const root = path.resolve(dir) + path.sep;
+  for (const file of files) {
+    const full = path.resolve(dir, file);
+    if (!full.startsWith(root)) continue;
+    try {
+      fs.rmSync(full, { force: true });
+    } catch (err) {
+      console.warn(`Could not remove ${full}: ${(err as Error).message}`);
+    }
+  }
 }
 
 export function listDownloads(): DownloadJob[] {

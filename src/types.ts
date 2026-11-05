@@ -6,13 +6,32 @@ export type DownloadStatus =
   | "failed"
   | "cancelled";
 
+export type MediaType = "video" | "audio";
+
+/** Tags written into the output file(s). Implies embedMetadata. */
+export interface MetadataTags {
+  title?: string;
+  artist?: string;
+  album?: string;
+  albumArtist?: string;
+  genre?: string;
+  /** Free text, usually a year ("2024") or a date ("2024-05-17") */
+  date?: string;
+  /** Track number, e.g. "3" or "3/12" */
+  track?: string;
+  composer?: string;
+  comment?: string;
+}
+
 export interface DownloadOptions {
   url: string;
+  /** "audio" extracts the audio track only, "video" (default) keeps video+audio */
+  type?: MediaType;
   /** yt-dlp format selector, e.g. "bestvideo[height<=1080]+bestaudio/best" */
   format?: string;
-  /** Extract audio only (-x) */
+  /** @deprecated use type: "audio" */
   audioOnly?: boolean;
-  /** Audio codec for audioOnly: mp3, m4a, opus, flac, wav, best... */
+  /** Audio codec when type is "audio": mp3, m4a, opus, flac, wav, best... */
   audioFormat?: string;
   /** Remux/merge container for video: mp4, mkv, webm... */
   mergeFormat?: string;
@@ -25,6 +44,14 @@ export interface DownloadOptions {
   embedSubtitles?: boolean;
   embedThumbnail?: boolean;
   embedMetadata?: boolean;
+  /** Custom tags (artist, album...) overriding what yt-dlp extracted */
+  metadata?: MetadataTags;
+  /** Split the file into one file per chapter (--split-chapters) */
+  splitChapters?: boolean;
+  /** Keep the full, unsplit file when splitChapters is on (default false) */
+  keepOriginal?: boolean;
+  /** Output template for chapter files, relative to the job folder */
+  chapterTemplate?: string;
   /** Rate limit, e.g. "2M" */
   rateLimit?: string;
   /** yt-dlp output template, relative to the job folder */
